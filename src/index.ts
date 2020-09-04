@@ -8,99 +8,184 @@ import {
   StandardMaterial,
   Color3
 } from '@babylonjs/core';
-import PlayerController from './player/player.controller';
+import PlayerController from './control/player.controller';
+import { findMesh } from './utils/misc';
+import ConstructedScene, { ISceneParams } from './scene_management';
+import BrowserEventsService, { IEventHandlerMap } from './utils/browser-events.service';
 
 class Game {
   private canvas: HTMLCanvasElement;
   private engine: Engine;
-  private scene: Scene;
-  private camera: FreeCamera;
-  private light: HemisphericLight;
+  private scenes: Map<string, ConstructedScene>;
+  private lastSceneName: string;
+  private currentScene: ConstructedScene;
   private player: PlayerController;
+  private eventHandlerPairs: IEventHandlerMap;
   public unregisterEventListeners: Function;
+  private toggled: boolean = false;
 
   constructor(canvasElement: string) {
     this.canvas = document.getElementById(canvasElement) as HTMLCanvasElement;
-    this.engine = new Engine(this.canvas, true);
+    this.engine = new Engine(this.canvas, true, {}, true);
+    this.scenes = new Map<string, ConstructedScene>();
+
+    this.createScene('default');
+    const defaultScene = this.scenes.get('default');
+    this.currentScene = defaultScene;
+    
+    const playerMesh = findMesh('player', defaultScene.sceneConfig.meshes);
+    this.player = new PlayerController(playerMesh);
+
+    this.eventHandlerPairs = Object.entries({
+      'keydown': [(e: KeyboardEvent) => {
+        if (e.key === '0') {
+          !this.toggled ? this.switchScene('darkerScene') : this.switchScene('default');
+          this.toggled = !this.toggled;
+        }
+      }],
+      'resize': [() => this.engine.resize()],
+      'mousewheel': []
+    });
   }
 
-  static async init(): Promise<Game> {
+  static init(): Game {
     const game = new Game('renderCanvas');
-    window.addEventListener('DOMContentLoaded', async () => {
 
-      await game.createScene();
-      
-      game.unregisterEventListeners = await game.registerEventListeners();
+    game.createScene('darkerScene', {
+      materialColor: [6, -5, 10],
+      lightIntensity: 0.35
+    });
 
+    window.addEventListener('DOMContentLoaded', () => {
+      game.unregisterEventListeners = game.registerEventListeners();
       game.doRender();
-
     });
     return game;
   }
 
-  async createScene(): Promise<void> {
+  private createScene(
+    name: string,
+    params: ISceneParams = {
+      materialColor: [0, 2, 1],
+      lightIntensity: 1
+    }
+  ): void {
+    const scene = new ConstructedScene(name, this.engine);
 
-    this.scene = new Scene(this.engine);
+    scene.init((_scene) => {
+      const myMaterial = new StandardMaterial("myMaterial", _scene);
+      const camera = new FreeCamera('camera', new Vector3(0, 5,-10), _scene);
+      const light = new HemisphericLight('light', new Vector3(0,1,0), _scene);
+      const playerMesh = MeshBuilder.CreateSphere('player', { segments: 16, diameter: 1 }, _scene);
+      const playerTail = [
+        MeshBuilder.CreateSphere('playerTail0', { segments: 16, diameter: 1 }, _scene),
+        MeshBuilder.CreateSphere('playerTail1', { segments: 16, diameter: 1 }, _scene)
+      ];
+      const ground = MeshBuilder.CreateGround('ground', { width: 10, height: 6, subdivisions: 2 }, _scene);
 
-    const myMaterial = new StandardMaterial("myMaterial", this.scene);
+      myMaterial.emissiveColor = new Color3(...params.materialColor);
+  
+      camera.setTarget(Vector3.Zero());  
+      camera.attachControl(this.canvas, false);
+  
+      light.intensity = params.lightIntensity;
+  
+      playerMesh.position.y = 1;
+      playerTail[0].position.y = 1;
+      playerTail[0].position.x = playerMesh.position.x + 1;
+      playerTail[1].position.y = 1;
+      playerTail[1].position.x = playerTail[0].position.x + 1;
 
-    myMaterial.diffuseColor = new Color3(1, 0, 1);
-    myMaterial.specularColor = new Color3(0.5, 0.6, 0.87);
-    myMaterial.ambientColor = new Color3(0, 2, 1);
-    myMaterial.emissiveColor = new Color3(0, 2, 1);
+      playerMesh.material = myMaterial;
+      playerTail.forEach(mesh => mesh.material = myMaterial);
 
-    this.camera = new FreeCamera('camera1', new Vector3(0, 5,-10), this.scene);
+      const player = new PlayerController(playerMesh, {}, playerTail);
 
-    this.camera.setTarget(Vector3.Zero());
+      return ({
+        player,
+        materials: [myMaterial],
+        cameras: [camera],
+        lights: [light],
+        meshes: [ground]
+      });
+    })
 
-    this.camera.attachControl(this.canvas, false);
-
-    this.light = new HemisphericLight('light1', new Vector3(0,1,0), this.scene);
-    this.light.intensity = 0.6;
-
-    const sphere = MeshBuilder.CreateSphere('sphere', { segments: 16, diameter: 1 }, this.scene);
-
-    sphere.position.y = 1;
-    
-    sphere.material = myMaterial;
-
-    this.player = new PlayerController(sphere);
-
-    const ground = MeshBuilder.CreateGround('ground',
-                                { width: 10, height: 6, subdivisions: 2 }, this.scene);
-
-                                console.log(this.scene.meshes.map(({ id }) => id))
+    this.scenes.set(name, scene);
   }
 
-  doRender(): void { this.engine.runRenderLoop(() => this.scene.render()); }
+  private createDefaultScene(): ConstructedScene {
+    const sceneName = 'default';
+    const scene = new ConstructedScene(sceneName, this.engine);
 
-  async registerEventListeners(): Promise<Function> {
-    const eventMethodPairs = Object.entries({
-      'keydown': [this.player.inputListener],
-      'resize': [
-        (e) => this.engine.resize()
-      ],
-      'mousewheel': [
-        (e) => { } 
-      ]
+    scene.init((_scene) => {
+      const myMaterial = new StandardMaterial("myMaterial", _scene);
+      const camera = new FreeCamera('camera', new Vector3(0, 5,-10), _scene);
+      const light = new HemisphericLight('light', new Vector3(0,1,0), _scene);
+      const playerMesh = MeshBuilder.CreateSphere('player', { segments: 16, diameter: 1 }, _scene);
+      const playerTail = [
+        MeshBuilder.CreateSphere('playerTail0', { segments: 16, diameter: 1 }, _scene),
+        MeshBuilder.CreateSphere('playerTail1', { segments: 16, diameter: 1 }, _scene)
+      ];
+      const ground = MeshBuilder.CreateGround('ground', { width: 10, height: 6, subdivisions: 2 }, _scene);
+
+      myMaterial.emissiveColor = new Color3(0, 2, 1);
+  
+      camera.setTarget(Vector3.Zero());  
+      camera.attachControl(this.canvas, false);
+  
+      light.intensity = 0.6;
+  
+      playerMesh.position.y = 1;
+      playerTail[0].position.y = 1;
+      playerTail[0].position.x = playerMesh.position.x + 1;
+      playerTail[1].position.y = 1;
+      playerTail[1].position.x = playerTail[0].position.x + 1;
+
+      playerMesh.material = myMaterial;
+      playerTail.forEach(mesh => mesh.material = myMaterial);
+
+      const player = new PlayerController(playerMesh, {}, playerTail);
+
+      return ({
+        player,
+        materials: [myMaterial],
+        cameras: [camera],
+        lights: [light],
+        meshes: [ground]
+      });
     });
 
-    for(const [event, methods] of eventMethodPairs) {
-      methods.forEach(method => {
-        window.addEventListener(event, method);
-      });
-    }
+    return scene;
+  }
 
-    return () => {
-      for(const [event, methods] of eventMethodPairs) {
-        methods.forEach(method => {
-          window.removeEventListener(event, method);
-        });
-      }
+  public switchScene(name: string): void {
+    const scene = this.scenes.get(name);
+    
+    if (scene) {
+      this.currentScene.close();
+      this.lastSceneName = this.currentScene.name;
+      this.currentScene = scene;
+    } else return alert(`Scene "${name}" is not present`);
+
+    this.configurePlayer(scene.sceneConfig);
+  }
+
+  private configurePlayer(scene: Scene): void {
+    const playerMesh = findMesh('player', scene.meshes);
+    const state = {
+      ...this.player.getState(),
+      latestPosition: this.player.getLatestPosition()
     };
+    this.player.clearMoveInterval();
+
+    this.player = new PlayerController(playerMesh, state, this.player.getTail());
+  }
+
+  private doRender(): void { this.engine.runRenderLoop(() => this.currentScene.sceneConfig.render()); }
+
+  private registerEventListeners(): Function {
+    return BrowserEventsService.registerEventListeners(this.eventHandlerPairs);
   }
 }
 
-let game: Game;
-
-Game.init().then(g => game = g);
+Game.init();
